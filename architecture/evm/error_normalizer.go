@@ -315,7 +315,11 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		if len(rethRevert) > 1 && rethRevert[1] != "" && details["data"] == nil {
 			details["data"] = rethRevert[1]
 		}
-		if rethRevert != nil ||
+		// Code 3 is the standard execution-revert code. Some nodes send it with
+		// a message such as "revert: invalid jump destination" that has no
+		// "reverted" in it.
+		if code == common.JsonRpcErrorEvmReverted ||
+			rethRevert != nil ||
 			strings.Contains(msg, "reverted") ||
 			strings.Contains(msg, "VM execution error") ||
 			strings.Contains(msg, "transaction: revert") ||

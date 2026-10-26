@@ -696,3 +696,47 @@ func TestExtractJsonRpcError_TooManySubscriptions_IsCapacityExceeded(t *testing.
 		t.Fatalf("expected ErrEndpointCapacityExceeded, got %T: %v", err, err)
 	}
 }
+
+// TestExtractJsonRpcError_Code3Revert verifies that JSON-RPC code 3 is an
+// execution revert whatever the message is, so the network does not retry it
+// on other upstreams and the circuit breaker does not count it.
+func TestExtractJsonRpcError_Code3Revert(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		code       int
+		message    string
+		wantRevert bool
+	}{
+		{name: "code 3 with revert reason", code: 3, message: "revert: invalid jump destination", wantRevert: true},
+		{name: "code 3 execution reverted", code: 3, message: "execution reverted", wantRevert: true},
+		{name: "geth-style revert", code: -32000, message: "execution reverted: not owner", wantRevert: true},
+		{name: "internal error", code: -32603, message: "internal error", wantRevert: false},
+		{name: "rate limit", code: -32005, message: "rate limit exceeded", wantRevert: false},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := common.NewNormalizedRequest([]byte(
+				`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`))
+			nr := common.NewNormalizedResponse().WithRequest(req)
+
+			r := &http.Response{StatusCode: 200, Header: http.Header{}}
+			jrErr := common.NewErrJsonRpcExceptionExternal(tc.code, tc.message, "")
+			jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+			err := ExtractJsonRpcError(r, nr, jr, nil)
+			isRevert := common.HasErrorCode(err, common.ErrCodeEndpointExecutionException)
+			if isRevert != tc.wantRevert {
+				t.Fatalf("execution exception: got %v, want %v (%T: %v)", isRevert, tc.wantRevert, err, err)
+			}
+			if tc.wantRevert && common.IsRetryableTowardNetwork(err) {
+				t.Fatalf("revert must not be retried toward the network")
+			}
+		})
+	}
+}
